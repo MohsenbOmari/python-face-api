@@ -1,75 +1,105 @@
 import os
-import json
 import base64
-import face_recognition
-import io
 import numpy as np
-from PIL import Image
 from flask import Flask, request, jsonify
+from deepface import DeepFace
+# --- تم التعديل هنا ---
+# تم تغيير مسار استيراد وحدة التحقق
+from deepface.modules import verification
 
 app = Flask(__name__)
 
+# تحديد الموديل الذي سنستخدمه
+# VGG-Face هو خيار متوازن بين الدقة والسرعة
+MODEL_NAME = "VGG-Face"
 
-def get_embedding_from_data(image_data_base64):
-    """يستخرج الـ embedding من بيانات صورة base64."""
+
+def base64_to_numpy(image_base64):
+    """يحول الصورة من base64 إلى مسار ملف مؤقت."""
+    if "," in image_base64:
+        image_base64 = image_base64.split(',')[1]
+
+    image_bytes = base64.b64decode(image_base64)
+    temp_path = "/tmp/temp_image.jpg"
+    with open(temp_path, "wb") as f:
+        f.write(image_bytes)
+    return temp_path
+
+
+@app.route('/generate', methods=['POST'])
+def generate_embedding():
+    """
+    يستقبل صورة ويقوم بإنشاء بصمة الوجه (embedding).
+    """
     try:
-        image_bytes = base64.b64decode(image_data_base64)
-        pil_image = Image.open(io.BytesIO(image_bytes))
-        if pil_image.mode != 'RGB':
-            pil_image = pil_image.convert('RGB')
-        image_np = np.array(pil_image)
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({'success': False, 'message': 'بيانات الصورة مفقودة.'}), 400
 
-        face_locations = face_recognition.face_locations(image_np, model="hog")
-        if not face_locations:
-            return None, "لم يتم العثور على وجه في الصورة."
+        img_path = base64_to_numpy(data['image_base64'])
 
-        face_encodings = face_recognition.face_encodings(image_np, known_face_locations=[face_locations[0]])
-        if face_encodings:
-            return face_encodings[0], None
-        else:
-            return None, "تم الكشف عن وجه لكن فشل استخراج السمات."
+        embedding_objs = DeepFace.represent(
+            img_path=img_path,
+            model_name=MODEL_NAME,
+            enforce_detection=True
+        )
+
+        if not embedding_objs or 'embedding' not in embedding_objs[0]:
+            return jsonify({'success': False, 'message': 'فشل استخراج بصمة الوجه.'}), 400
+
+        embedding = embedding_objs[0]['embedding']
+
+        return jsonify({
+            'success': True,
+            'embedding': embedding
+        })
+
     except Exception as e:
-        return None, f"خطأ في معالجة الصورة: {str(e)}"
+        error_message = str(e)
+        if "Face could not be detected" in error_message:
+            return jsonify({'success': False, 'message': 'لم يتم العثور على وجه في الصورة.'}), 400
+        return jsonify({'success': False, 'message': f"خطأ عام في الخادم: {error_message}"}), 500
 
 
 @app.route('/compare', methods=['POST'])
 def compare_faces():
     """
-    يستقبل طلب POST يحتوي على صورة حية و embedding مخزن، ويقوم بمقارنتهما.
+    يستقبل صورة حية وبصمة مخزنة، ويقوم بمقارنتهما.
     """
     try:
         data = request.get_json()
-        if not data or 'live_image_base64' not in data or 'stored_embedding_json' not in data:
+        if not data or 'live_image_base64' not in data or 'stored_embedding' not in data:
             return jsonify({'success': False, 'message': 'بيانات مفقودة في الطلب.'}), 400
 
-        live_image_base64 = data['live_image_base64']
-        stored_embedding_json = data['stored_embedding_json']
-        tolerance = float(data.get('tolerance', 0.55))
+        live_img_path = base64_to_numpy(data['live_image_base64'])
+        stored_embedding = data['stored_embedding']
 
-        # استخراج السمات من الصورة الحية
-        live_embedding, error_msg = get_embedding_from_data(live_image_base64)
-        if error_msg:
-            return jsonify({'success': False, 'message': error_msg}), 400
+        live_embedding_objs = DeepFace.represent(
+            img_path=live_img_path,
+            model_name=MODEL_NAME,
+            enforce_detection=True
+        )
+        live_embedding = live_embedding_objs[0]['embedding']
 
-        # مقارنة السمات
-        stored_embedding_list = json.loads(stored_embedding_json)
-        stored_embedding_np = np.array(stored_embedding_list)
+        # --- تم التعديل هنا ---
+        # تم استخدام المسار الصحيح للدالة
+        distance = verification.findCosineDistance(np.array(live_embedding), np.array(stored_embedding))
 
-        matches = face_recognition.compare_faces([stored_embedding_np], live_embedding, tolerance=tolerance)
-        distance = face_recognition.face_distance([stored_embedding_np], live_embedding)
-
-        is_match = bool(matches[0])
+        threshold = 0.40
+        is_match = distance <= threshold
 
         return jsonify({
             'success': True,
-            'is_match': is_match,
-            'distance': float(distance[0])
+            'is_match': bool(is_match),
+            'distance': float(distance)
         })
 
     except Exception as e:
-        return jsonify({'success': False, 'message': f"خطأ عام في الخادم: {str(e)}"}), 500
+        error_message = str(e)
+        if "Face could not be detected" in error_message:
+            return jsonify({'success': False, 'message': 'لم يتم العثور على وجه في الصورة الحية.'}), 400
+        return jsonify({'success': False, 'message': f"خطأ عام في الخادم: {error_message}"}), 500
 
 
 if __name__ == "__main__":
-    # هذا الجزء مهم للاستضافة على Render
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))

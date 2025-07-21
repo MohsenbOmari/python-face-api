@@ -4,21 +4,21 @@ import numpy as np
 from flask import Flask, request, jsonify
 from deepface import DeepFace
 # --- تم التعديل هنا ---
-# تم تغيير مسار استيراد وحدة التحقق
-from deepface.modules import verification
+# تم تغيير مسار استيراد وحدة التحقق إلى المسار الصحيح
+from deepface.commons import distance
 
 app = Flask(__name__)
 
 # تحديد الموديل الذي سنستخدمه
-# VGG-Face هو خيار متوازن بين الدقة والسرعة
 MODEL_NAME = "VGG-Face"
 
-def base64_to_numpy(image_base64):
+def base64_to_temp_path(image_base64):
     """يحول الصورة من base64 إلى مسار ملف مؤقت."""
     if "," in image_base64:
         image_base64 = image_base64.split(',')[1]
     
     image_bytes = base64.b64decode(image_base64)
+    # استخدام مجلد /tmp المتاح في بيئات الخوادم
     temp_path = "/tmp/temp_image.jpg"
     with open(temp_path, "wb") as f:
         f.write(image_bytes)
@@ -34,7 +34,7 @@ def generate_embedding():
         if not data or 'image_base64' not in data:
             return jsonify({'success': False, 'message': 'بيانات الصورة مفقودة.'}), 400
 
-        img_path = base64_to_numpy(data['image_base64'])
+        img_path = base64_to_temp_path(data['image_base64'])
         
         embedding_objs = DeepFace.represent(
             img_path=img_path,
@@ -42,16 +42,12 @@ def generate_embedding():
             enforce_detection=True
         )
         
-        if not embedding_objs or 'embedding' not in embedding_objs[0]:
-            return jsonify({'success': False, 'message': 'فشل استخراج بصمة الوجه.'}), 400
-
         embedding = embedding_objs[0]['embedding']
         
         return jsonify({
             'success': True,
             'embedding': embedding
         })
-
     except Exception as e:
         error_message = str(e)
         if "Face could not be detected" in error_message:
@@ -68,7 +64,7 @@ def compare_faces():
         if not data or 'live_image_base64' not in data or 'stored_embedding' not in data:
             return jsonify({'success': False, 'message': 'بيانات مفقودة في الطلب.'}), 400
 
-        live_img_path = base64_to_numpy(data['live_image_base64'])
+        live_img_path = base64_to_temp_path(data['live_image_base64'])
         stored_embedding = data['stored_embedding']
         
         live_embedding_objs = DeepFace.represent(
@@ -80,17 +76,16 @@ def compare_faces():
         
         # --- تم التعديل هنا ---
         # تم استخدام المسار الصحيح للدالة
-        distance = verification.findCosineDistance(np.array(live_embedding), np.array(stored_embedding))
+        dist = distance.findCosineDistance(np.array(live_embedding), np.array(stored_embedding))
         
         threshold = 0.40
-        is_match = distance <= threshold
+        is_match = dist <= threshold
         
         return jsonify({
             'success': True,
             'is_match': bool(is_match),
-            'distance': float(distance)
+            'distance': float(dist)
         })
-
     except Exception as e:
         error_message = str(e)
         if "Face could not be detected" in error_message:

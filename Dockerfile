@@ -24,8 +24,7 @@ COPY requirements.txt .
 # Install the Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- تم إضافة هذه الخطوة المهمة ---
-# هذا الأمر يقوم بتنزيل نموذج الذكاء الاصطناعي أثناء عملية البناء
+# This command pre-downloads the AI model during the build process
 RUN python -c "from deepface import DeepFace; DeepFace.build_model('VGG-Face')"
 
 # Copy the main application file into the container
@@ -34,5 +33,6 @@ COPY main.py .
 # Expose the port that the application will run on
 EXPOSE 10000
 
-# Run the application using gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "main:app"]
+# --- تم التعديل هنا ---
+# Run the application using gunicorn with an increased timeout of 120 seconds
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "120", "main:app"]
